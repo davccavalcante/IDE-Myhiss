@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      should-release: ${{ steps.check.outputs.should-release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: read
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+      - id: check
+        run: |
+          TAG="v${{ steps.read.outputs.version }}"
+          if git ls-remote --tags --exit-code origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists on origin; skipping release."
+            echo "should-release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG not found on origin; proceeding with release."
+            echo "should-release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-darwin-arm64:
+    needs: detect-version
+    if: needs.detect-version.outputs.should-release == 'true'
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.1'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Resolve electron
+        run: npm run electron
+      - name: Build macOS arm64
+        run: npm run gulp vscode-darwin-arm64
+      - name: Package as ZIP
+        run: |
+          set -e
+          mkdir -p out
+          SRC_APP="$GITHUB_WORKSPACE/../VSCode-darwin-arm64/Code - OSS.app"
+          if [ ! -d "$SRC_APP" ]; then
+            echo "Built .app not found at: $SRC_APP"
+            ls -la "$GITHUB_WORKSPACE/.." || true
+            exit 1
+          fi
+          ZIP_NAME="Myhiss-${VERSION}-darwin-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$SRC_APP" "out/${ZIP_NAME}"
+          ls -lah out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Myhiss-${{ env.VERSION }}-darwin-arm64
+          path: out/*.zip
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    needs: [detect-version, build-darwin-arm64]
+    if: needs.detect-version.outputs.should-release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+      TAG: v${{ needs.detect-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Myhiss ${{ env.VERSION }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          files: |
+            artifacts/**/*.zip
