@@ -64,7 +64,7 @@ jobs:
           ZIP_NAME="Myhiss-${VERSION}-darwin-arm64.zip"
           ditto -c -k --sequesterRsrc --keepParent "$SRC_APP" "out/${ZIP_NAME}"
           ls -lah out/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Myhiss-${{ env.VERSION }}-darwin-arm64
           path: out/*.zip
